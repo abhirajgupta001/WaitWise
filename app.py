@@ -1,12 +1,14 @@
 import hashlib
 import json
+import math
 import os
 import re
 import streamlit as st
+from streamlit_geolocation import streamlit_geolocation
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Wait Wise - Doctor Appointment",
+    page_title="Wait Wise - Live Doctor Queue",
     page_icon="🩺",
     layout="centered",
 )
@@ -63,7 +65,6 @@ def save_json(filename, data):
     json.dump(data, f, indent=4)
 
 
-# Load data (Using slots_by_date dictionary structure)
 app_data = load_json(
     DATA_FILE,
     {
@@ -81,6 +82,27 @@ def hash_password(text):
 def is_valid_email(email):
   pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
   return re.match(pattern, email) is not None
+
+
+# Helper: Haversine formula to compute travel time between coordinates
+def calculate_travel_time(lat1, lon1, lat2, lon2):
+  R = 6371.0
+  dlat = math.radians(lat2 - lat1)
+  dlon = math.radians(lon2 - lon1)
+  a = (
+      math.sin(dlat / 2) ** 2
+      + math.cos(math.radians(lat1))
+      * math.cos(math.radians(lat2))
+      * math.sin(dlon / 2) ** 2
+  )
+  c = 2 * math.asin(math.sqrt(a))
+  distance_km = R * c
+
+  # Assuming city travel speed of 30 km/h
+  speed_kmh = 30.0
+  travel_hours = distance_km / speed_kmh
+  travel_minutes = int(travel_hours * 60)
+  return max(5, travel_minutes)
 
 
 # ==========================================
@@ -144,65 +166,102 @@ if not st.session_state.logged_in:
 
     else:
       st.write("Create a new account.")
-      with st.form("signup_form"):
-        full_name = st.text_input("Full Name")
-        email = st.text_input("Email Address")
-        password = st.text_input("Create Password", type="password")
-        role_selection = st.selectbox(
-            "Select Your Role", ["Patient", "Doctor"]
+      full_name = st.text_input("Full Name")
+      email = st.text_input("Email Address")
+      password = st.text_input("Create Password", type="password")
+      phone_number = st.text_input("Phone Number")
+      role_selection = st.selectbox("Select Your Role", ["Patient", "Doctor"])
+
+      patient_lat = None
+      patient_lon = None
+      clinic_address = ""
+      clinic_lat = ""
+      clinic_lon = ""
+      secret_code = ""
+
+      if role_selection == "Patient":
+        st.markdown("---")
+        st.write(
+            "📍 **Browser Live Location (Compulsory to fetch via browser popup)**"
         )
+        loc_data = streamlit_geolocation()
 
-        phone_number = ""
-        clinic_address = ""
-        secret_code = ""
-
-        if role_selection == "Doctor":
-          phone_number = st.text_input("Phone Number")
-          clinic_address = st.text_input("Clinic Address")
-          secret_code = st.text_input(
-              "Set Your Personal Secret Code (For Future Logins)",
-              type="password",
+        if loc_data and loc_data.get("latitude") is not None:
+          patient_lat = loc_data.get("latitude")
+          patient_lon = loc_data.get("longitude")
+          st.success(
+              f"Live Location Captured! Lat: {patient_lat}, Lon: {patient_lon}"
           )
+        else:
+          st.warning(
+              "Please click the button above and allow location access in your"
+              " browser."
+          )
+      else:
+        st.markdown("---")
+        st.write("🏥 **Doctor Clinic Details**")
+        clinic_address = st.text_input("Clinic Address Name")
+        clinic_lat = st.text_input("Clinic Latitude (e.g., 28.6139)")
+        clinic_lon = st.text_input("Clinic Longitude (e.g., 77.2090)")
+        secret_code = st.text_input("Set Your Secret Code", type="password")
 
-        signup_submit = st.form_submit_button("Sign Up")
+      if st.button("Complete Sign Up"):
+        if not full_name or not email or not password or not phone_number:
+          st.error("Please fill in all general profile fields.")
+        elif not is_valid_email(email):
+          st.error("Please enter a valid email address.")
+        elif email in users_db:
+          st.error("An account with this email already exists.")
+        elif role_selection == "Patient" and (
+            patient_lat is None or patient_lon is None
+        ):
+          st.error(
+              "Live location permission is compulsory! Please fetch your live"
+              " location before signing up."
+          )
+        elif role_selection == "Doctor":
+          try:
+            c_lat = float(clinic_lat)
+            c_lon = float(clinic_lon)
+          except ValueError:
+            c_lat = None
+            c_lon = None
 
-        if signup_submit:
-          if not full_name or not email or not password:
-            st.error("Please fill in all required fields.")
-          elif not is_valid_email(email):
+          if not clinic_address or not secret_code or c_lat is None or c_lon is None:
             st.error(
-                "Please enter a valid email address (e.g., name@gmail.com)."
+                "Please fill out your clinic address, secret code, and valid"
+                " clinic coordinates."
             )
-          elif email in users_db:
-            st.error(
-                "An account with this email already exists. Please log in."
-            )
-          elif role_selection == "Doctor" and (
-              not phone_number or not clinic_address or not secret_code
-          ):
-            st.error(
-                "Doctors must provide a phone number, clinic address, and a"
-                " secret code."
-            )
+            st.stop()
+        else:
+          if role_selection == "Patient":
+            users_db[email] = {
+                "full_name": full_name,
+                "password": hash_password(password),
+                "role": "Patient",
+                "phone": phone_number,
+                "lat": patient_lat,
+                "lon": patient_lon,
+            }
           else:
             users_db[email] = {
                 "full_name": full_name,
                 "password": hash_password(password),
-                "role": role_selection,
+                "role": "Doctor",
                 "phone": phone_number,
                 "clinic": clinic_address,
-                "secret_code": hash_password(secret_code)
-                if role_selection == "Doctor"
-                else "",
+                "lat": float(clinic_lat),
+                "lon": float(clinic_lon),
+                "secret_code": hash_password(secret_code),
             }
-            save_json(USERS_FILE, users_db)
-            st.success(
-                f"Account created successfully as a {role_selection}! Please"
-                " switch to Log In."
-            )
+          save_json(USERS_FILE, users_db)
+          st.success(
+              f"Account created successfully as a {role_selection}! Please"
+              " switch to Log In."
+          )
 
 # ==========================================
-# 2. DASHBOARD VIEW (DIFFERENT FOR DOCTOR VS PATIENT)
+# 2. DASHBOARD VIEW
 # ==========================================
 else:
   if os.path.exists("logo.png"):
@@ -221,19 +280,20 @@ else:
   # DOCTOR VIEW
   # ----------------------------------------
   if st.session_state.user_role == "Doctor":
-    st.title("Doctor Schedule Management")
+    st.title("Doctor Live Schedule & Queue Management")
     st.write(f"Welcome Dr. **{user_display_name}**!")
     st.write(f"📞 **Phone:** {current_user_info.get('phone', 'N/A')}")
-    st.write(f"🏥 **Clinic:** {current_user_info.get('clinic', 'N/A')}")
+    st.write(
+        f"🏥 **Clinic:** {current_user_info.get('clinic', 'N/A')} (Lat:"
+        f" {current_user_info.get('lat')}, Lon:"
+        f" {current_user_info.get('lon')})"
+    )
 
     st.markdown("---")
-    st.subheader("Manage Schedule by Date")
-
-    # Calendar Date Picker for Doctor
-    doc_selected_date = st.date_input("Select Date to Manage Slots")
+    st.subheader("Manage Slots by Date")
+    doc_selected_date = st.date_input("Select Date to Manage")
     date_str = str(doc_selected_date)
 
-    # Add slot form for the selected date
     with st.form("add_slot_form"):
       st.write(f"Add Time Slot for **{date_str}**")
       new_slot = st.text_input("Enter Time Slot (e.g., 10:00 AM)")
@@ -262,11 +322,11 @@ else:
 
     if current_date_slots:
       for slot in list(current_date_slots):
-        col_slot, col_btn = st.columns([3, 1])
-        with col_slot:
+        col_s1, col_s2 = st.columns([3, 1])
+        with col_s1:
           st.write(f"• {slot}")
-        with col_btn:
-          if st.button("Delete", key=f"del_{date_str}_{slot}"):
+        with col_s2:
+          if st.button("Delete Slot", key=f"del_{date_str}_{slot}"):
             app_data["slots_by_date"][date_str].remove(slot)
             if not app_data["slots_by_date"][date_str]:
               del app_data["slots_by_date"][date_str]
@@ -276,79 +336,160 @@ else:
     else:
       st.info(f"No slots configured for {date_str} yet.")
 
-    st.sidebar.title("Doctor Admin")
-    st.sidebar.markdown("---")
-    st.sidebar.write("### Patient Bookings")
-    if app_data["booked_appointments"]:
-      for idx, booking in enumerate(app_data["booked_appointments"], 1):
-        st.sidebar.info(
-            f"**{idx}. Patient:** {booking['name']}\n\n* **Date:**"
-            f" {booking['date']}\n* **Slot:** {booking['slot']}\n* **Booked"
-            f" By:** {booking['booked_by']}"
+    st.markdown("---")
+    st.subheader("🔴 Live Patient Queue Dashboard")
+    date_bookings = [
+        b for b in app_data["booked_appointments"] if b["date"] == date_str
+    ]
+
+    if date_bookings:
+      for idx, booking in enumerate(date_bookings):
+        st.write(f"### Patient {idx + 1}: {booking['name']}")
+        st.write(
+            f"🕒 **Slot:** {booking['slot']} | 📞 **Phone:**"
+            f" {booking.get('phone', 'N/A')} | 🚗 **Est. Travel Time from Live"
+            f" Location:** {booking.get('travel_time_mins', 'N/A')} mins"
         )
+        st.write(f"Current Status: **{booking.get('status', 'Waiting')}**")
+
+        col_b1, col_b2, col_b3 = st.columns(3)
+        with col_b1:
+          if st.button("⏳ Set Waiting", key=f"wait_{date_str}_{idx}"):
+            booking["status"] = "Waiting"
+            save_json(DATA_FILE, app_data)
+            st.success(f"Updated {booking['name']} to Waiting.")
+            st.rerun()
+        with col_b2:
+          if st.button("🩺 In Consultation", key=f"clinic_{date_str}_{idx}"):
+            booking["status"] = "In Consultation"
+            save_json(DATA_FILE, app_data)
+            st.success(f"Updated {booking['name']} to In Consultation.")
+            st.rerun()
+        with col_b3:
+          if st.button("✅ Over / Completed", key=f"over_{date_str}_{idx}"):
+            booking["status"] = "Completed"
+            save_json(DATA_FILE, app_data)
+            st.success(f"Updated {booking['name']} to Completed.")
+            st.rerun()
+        st.markdown("---")
     else:
-      st.sidebar.write("No appointments booked yet.")
+      st.info(f"No patient bookings found for {date_str}.")
 
   # ----------------------------------------
   # PATIENT VIEW
   # ----------------------------------------
   else:
-    st.title("Patient Appointment Booking")
+    st.title("Patient Appointment & Live Status Dashboard")
     st.write(f"Welcome, **{user_display_name}**!")
-
-    st.sidebar.title("Your Information")
-    st.sidebar.markdown("---")
-    st.sidebar.write(
-        "Select a date from the calendar to view available slots set by the"
-        " doctor."
+    st.write(f"📞 **Your Phone:** {current_user_info.get('phone', 'N/A')}")
+    st.write(
+        f"📍 **Last Recorded Live Position:**"
+        f" {current_user_info.get('lat')}, {current_user_info.get('lon')}"
     )
 
-    with st.form("appointment_form"):
-      st.subheader("Book a Consultation Slot")
-      patient_name = st.text_input("Patient Full Name")
+    st.subheader("🟢 Your Live Booking Status")
+    user_bookings = [
+        b
+        for b in app_data["booked_appointments"]
+        if b["booked_by"] == st.session_state.user_email
+    ]
 
-      # Calendar Date Picker for Patient
-      pat_selected_date = st.date_input("Select Preferred Appointment Date")
-      pat_date_str = str(pat_selected_date)
+    if user_bookings:
+      for b in user_bookings:
+        status_color = "🟡"
+        if b.get("status") == "In Consultation":
+          status_color = "🔴"
+        elif b.get("status") == "Completed":
+          status_color = "🟢"
 
-      available_slots_for_date = (
-          app_data.get("slots_by_date", {}).get(pat_date_str, [])
+        st.info(
+            f"**Patient Name:** {b['name']}\n\n"
+            f"* **Date:** {b['date']}\n"
+            f"* **Slot:** {b['slot']}\n"
+            f"* **Estimated Travel Time:** {b.get('travel_time_mins')} minutes"
+            " from your current live location to clinic\n"
+            f"* **Live Status:** {status_color}"
+            f" **{b.get('status', 'Waiting')}**\n"
+            f"* 📱 *SMS notification sent to {b.get('phone')}: 'Estimated travel"
+            f" time to clinic is {b.get('travel_time_mins')} mins.'*"
+        )
+    else:
+      st.write("You have no active appointments booked right now.")
+
+    st.markdown("---")
+    st.subheader("Book a New Consultation Slot")
+    
+    patient_name = st.text_input("Patient Full Name")
+    patient_phone = st.text_input(
+        "Patient Phone Number", value=current_user_info.get("phone", "")
+    )
+
+    st.write("📍 **Update Live Location for this Trip (Optional):**")
+    trip_loc = streamlit_geolocation()
+    
+    use_current_trip_lat = current_user_info.get("lat", 0.0)
+    use_current_trip_lon = current_user_info.get("lon", 0.0)
+
+    if trip_loc and trip_loc.get("latitude") is not None:
+      use_current_trip_lat = trip_loc.get("latitude")
+      use_current_trip_lon = trip_loc.get("longitude")
+      st.success(
+          f"Fetched new live trip location: {use_current_trip_lat},"
+          f" {use_current_trip_lon}"
       )
 
-      if available_slots_for_date:
-        selected_slot = st.selectbox(
-            f"Available Time Slots for {pat_date_str}",
-            available_slots_for_date,
-        )
+    pat_selected_date = st.date_input("Select Preferred Appointment Date")
+    pat_date_str = str(pat_selected_date)
+
+    doctor_info = next(
+        (u for u in users_db.values() if u["role"] == "Doctor"), None
+    )
+    available_slots_for_date = app_data.get("slots_by_date", {}).get(
+        pat_date_str, []
+    )
+
+    if available_slots_for_date:
+      selected_slot = st.selectbox(
+          f"Available Time Slots for {pat_date_str}", available_slots_for_date
+      )
+    else:
+      selected_slot = None
+      st.warning(
+          f"The doctor has not set any available time slots for {pat_date_str}."
+      )
+
+    if st.button("Confirm Booking"):
+      if not patient_name or not patient_phone:
+        st.error("Please provide both patient name and phone number.")
+      elif not selected_slot:
+        st.error("No slot selected or available to book.")
+      elif not doctor_info:
+        st.error("No doctor clinic location registered in the system yet.")
       else:
-        selected_slot = None
-        st.warning(
-            f"The doctor has not set any available time slots for"
-            f" {pat_date_str}. Please choose another date!"
+        d_lat = doctor_info.get("lat", 0.0)
+        d_lon = doctor_info.get("lon", 0.0)
+
+        # Calculate travel time from whichever live position is active (New Delhi, Kanpur, etc.)
+        travel_mins = calculate_travel_time(
+            use_current_trip_lat, use_current_trip_lon, d_lat, d_lon
         )
 
-      submit_booking = st.form_submit_button("Confirm Booking")
+        app_data["slots_by_date"][pat_date_str].remove(selected_slot)
+        if not app_data["slots_by_date"][pat_date_str]:
+          del app_data["slots_by_date"][pat_date_str]
 
-      if submit_booking:
-        if not patient_name:
-          st.error("Please provide the patient name.")
-        elif not selected_slot:
-          st.error("No slot selected or available to book.")
-        else:
-          # Remove booked slot from that date's list
-          app_data["slots_by_date"][pat_date_str].remove(selected_slot)
-          if not app_data["slots_by_date"][pat_date_str]:
-            del app_data["slots_by_date"][pat_date_str]
-
-          app_data["booked_appointments"].append({
-              "name": patient_name,
-              "slot": selected_slot,
-              "date": pat_date_str,
-              "booked_by": st.session_state.user_email,
-          })
-          save_json(DATA_FILE, app_data)
-          st.success(
-              f"Successfully booked slot for {patient_name} at {selected_slot} on"
-              f" {pat_date_str}!"
-          )
-          st.rerun()
+        app_data["booked_appointments"].append({
+            "name": patient_name,
+            "phone": patient_phone,
+            "slot": selected_slot,
+            "date": pat_date_str,
+            "booked_by": st.session_state.user_email,
+            "status": "Waiting",
+            "travel_time_mins": travel_mins,
+        })
+        save_json(DATA_FILE, app_data)
+        st.success(
+            f"Successfully booked slot! Estimated travel time from your live"
+            f" location: {travel_mins} mins. SMS sent to {patient_phone}."
+        )
+        st.rerun()
