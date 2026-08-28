@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import requests
 import streamlit as st
 from streamlit_geolocation import streamlit_geolocation
 
@@ -46,6 +47,14 @@ if "user_email" not in st.session_state:
   st.session_state.user_email = ""
 if "user_role" not in st.session_state:
   st.session_state.user_role = ""
+
+# Location session states for doctor clinic search
+if "selected_address" not in st.session_state:
+  st.session_state["selected_address"] = ""
+if "clinic_lat" not in st.session_state:
+  st.session_state["clinic_lat"] = None
+if "clinic_lon" not in st.session_state:
+  st.session_state["clinic_lon"] = None
 
 # --- Data Storage Setup ---
 DATA_FILE = "appointments.json"
@@ -103,6 +112,24 @@ def calculate_travel_time(lat1, lon1, lat2, lon2):
   travel_hours = distance_km / speed_kmh
   travel_minutes = int(travel_hours * 60)
   return max(5, travel_minutes)
+
+
+# Free OpenStreetMap Search Helper (No API key needed)
+def get_free_place_suggestions(query):
+  if not query or len(query) < 3:
+    return []
+
+  url = "https://nominatim.openstreetmap.org/search"
+  params = {"q": query, "format": "json", "addressdetails": 1, "limit": 5}
+  headers = {"User-Agent": "WaitWiseApp/1.0"}
+
+  try:
+    response = requests.get(url, params=params, headers=headers)
+    if response.status_code == 200:
+      return response.json()
+  except Exception as e:
+    st.error(f"Error connecting to maps service: {e}")
+  return []
 
 
 # ==========================================
@@ -174,9 +201,6 @@ if not st.session_state.logged_in:
 
       patient_lat = None
       patient_lon = None
-      clinic_address = ""
-      clinic_lat = ""
-      clinic_lon = ""
       secret_code = ""
 
       if role_selection == "Patient":
@@ -199,10 +223,35 @@ if not st.session_state.logged_in:
           )
       else:
         st.markdown("---")
-        st.write("🏥 **Doctor Clinic Details**")
-        clinic_address = st.text_input("Clinic Address Name")
-        clinic_lat = st.text_input("Clinic Latitude (e.g., 28.6139)")
-        clinic_lon = st.text_input("Clinic Longitude (e.g., 77.2090)")
+        st.write("🏥 **Doctor Clinic Location Search (Free)**")
+        search_query = st.text_input(
+            "Type your clinic address (e.g., Divinity Homes Kanpur)",
+            value=st.session_state["selected_address"],
+            key="signup_clinic_search",
+        )
+
+        if search_query and search_query != st.session_state["selected_address"]:
+          suggestions = get_free_place_suggestions(search_query)
+          if suggestions:
+            st.markdown("### Select matching address:")
+            for item in suggestions:
+              display_name = item.get("display_name", "")
+              lat = item.get("lat")
+              lon = item.get("lon")
+
+              if st.button(display_name, key=f"osm_{item.get('place_id')}"):
+                st.session_state["selected_address"] = display_name
+                st.session_state["clinic_lat"] = float(lat)
+                st.session_state["clinic_lon"] = float(lon)
+                st.rerun()
+
+        if st.session_state["selected_address"]:
+          st.info(
+              f"Selected: {st.session_state['selected_address']} (Lat:"
+              f" {st.session_state['clinic_lat']}, Lon:"
+              f" {st.session_state['clinic_lon']})"
+          )
+
         secret_code = st.text_input("Set Your Secret Code", type="password")
 
       if st.button("Complete Sign Up"):
@@ -219,20 +268,15 @@ if not st.session_state.logged_in:
               "Live location permission is compulsory! Please fetch your live"
               " location before signing up."
           )
-        elif role_selection == "Doctor":
-          try:
-            c_lat = float(clinic_lat)
-            c_lon = float(clinic_lon)
-          except ValueError:
-            c_lat = None
-            c_lon = None
-
-          if not clinic_address or not secret_code or c_lat is None or c_lon is None:
-            st.error(
-                "Please fill out your clinic address, secret code, and valid"
-                " clinic coordinates."
-            )
-            st.stop()
+        elif role_selection == "Doctor" and (
+            not st.session_state["selected_address"]
+            or not secret_code
+            or st.session_state["clinic_lat"] is None
+        ):
+          st.error(
+              "Please select a valid clinic location from suggestions and set a"
+              " secret code."
+          )
         else:
           if role_selection == "Patient":
             users_db[email] = {
@@ -249,9 +293,9 @@ if not st.session_state.logged_in:
                 "password": hash_password(password),
                 "role": "Doctor",
                 "phone": phone_number,
-                "clinic": clinic_address,
-                "lat": float(clinic_lat),
-                "lon": float(clinic_lon),
+                "clinic": st.session_state["selected_address"],
+                "lat": float(st.session_state["clinic_lat"]),
+                "lon": float(st.session_state["clinic_lon"]),
                 "secret_code": hash_password(secret_code),
             }
           save_json(USERS_FILE, users_db)
@@ -418,7 +462,7 @@ else:
 
     st.markdown("---")
     st.subheader("Book a New Consultation Slot")
-    
+
     patient_name = st.text_input("Patient Full Name")
     patient_phone = st.text_input(
         "Patient Phone Number", value=current_user_info.get("phone", "")
@@ -426,7 +470,7 @@ else:
 
     st.write("📍 **Update Live Location for this Trip (Optional):**")
     trip_loc = streamlit_geolocation()
-    
+
     use_current_trip_lat = current_user_info.get("lat", 0.0)
     use_current_trip_lon = current_user_info.get("lon", 0.0)
 
@@ -469,7 +513,6 @@ else:
         d_lat = doctor_info.get("lat", 0.0)
         d_lon = doctor_info.get("lon", 0.0)
 
-        # Calculate travel time from whichever live position is active (New Delhi, Kanpur, etc.)
         travel_mins = calculate_travel_time(
             use_current_trip_lat, use_current_trip_lon, d_lat, d_lon
         )

@@ -1,2 +1,3 @@
 streamlit 
 streamlit-geolocation
+requests
