@@ -3,8 +3,12 @@ import json
 import math
 import os
 import re
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from streamlit_geolocation import streamlit_geolocation
 
 # --- Page Configuration ---
@@ -13,6 +17,9 @@ st.set_page_config(
     page_icon="🩺",
     layout="centered",
 )
+
+# --- Automatic Real-Time Refresh (Every 5 Seconds) ---
+st_autorefresh(interval=5000, limit=None, key="datarefresh")
 
 # --- Teal Theme & Custom Styling ---
 st.markdown(
@@ -48,13 +55,15 @@ if "user_email" not in st.session_state:
 if "user_role" not in st.session_state:
   st.session_state.user_role = ""
 
-# Location session states for doctor clinic search
-if "selected_address" not in st.session_state:
-  st.session_state["selected_address"] = ""
-if "clinic_lat" not in st.session_state:
-  st.session_state["clinic_lat"] = None
-if "clinic_lon" not in st.session_state:
-  st.session_state["clinic_lon"] = None
+# Persistent sign-up field session states
+if "signup_name" not in st.session_state:
+  st.session_state["signup_name"] = ""
+if "signup_email" not in st.session_state:
+  st.session_state["signup_email"] = ""
+if "signup_password" not in st.session_state:
+  st.session_state["signup_password"] = ""
+if "signup_phone" not in st.session_state:
+  st.session_state["signup_phone"] = ""
 
 # --- Data Storage Setup ---
 DATA_FILE = "appointments.json"
@@ -107,29 +116,39 @@ def calculate_travel_time(lat1, lon1, lat2, lon2):
   c = 2 * math.asin(math.sqrt(a))
   distance_km = R * c
 
-  # Assuming city travel speed of 30 km/h
   speed_kmh = 30.0
   travel_hours = distance_km / speed_kmh
   travel_minutes = int(travel_hours * 60)
   return max(5, travel_minutes)
 
 
-# Free OpenStreetMap Search Helper (No API key needed)
-def get_free_place_suggestions(query):
-  if not query or len(query) < 3:
-    return []
-
-  url = "https://nominatim.openstreetmap.org/search"
-  params = {"q": query, "format": "json", "addressdetails": 1, "limit": 5}
-  headers = {"User-Agent": "WaitWiseApp/1.0"}
+# --- Email Notification Helper ---
+def send_email_notification(to_email, patient_name, slot, date_str, travel_mins):
+  sender_email = "your_email@gmail.com"
+  sender_password = "your_email_app_password"
 
   try:
-    response = requests.get(url, params=params, headers=headers)
-    if response.status_code == 200:
-      return response.json()
+    msg = MIMEMultipart()
+    msg["From"] = sender_email
+    msg["To"] = to_email
+    msg["Subject"] = "Appointment Confirmation - Wait Wise"
+
+    body = (
+        f"Hello {patient_name},\n\nYour appointment has been successfully"
+        f" booked!\n\n- Date: {date_str}\n- Time Slot: {slot}\n- Estimated"
+        f" Travel Time to Clinic: {travel_mins} mins\n\nThank you for"
+        f" using Wait Wise."
+    )
+    msg.attach(MIMEText(body, "plain"))
+
+    server = smtplib.SMTP("smtp.gmail.com", 587)
+    server.starttls()
+    server.login(sender_email, sender_password)
+    server.sendmail(sender_email, to_email, msg.as_string())
+    server.quit()
+    return True
   except Exception as e:
-    st.error(f"Error connecting to maps service: {e}")
-  return []
+    return False
 
 
 # ==========================================
@@ -193,21 +212,48 @@ if not st.session_state.logged_in:
 
     else:
       st.write("Create a new account.")
-      full_name = st.text_input("Full Name")
-      email = st.text_input("Email Address")
-      password = st.text_input("Create Password", type="password")
-      phone_number = st.text_input("Phone Number")
+
+      full_name = st.text_input(
+          "Full Name",
+          value=st.session_state["signup_name"],
+          key="input_full_name",
+      )
+      st.session_state["signup_name"] = full_name
+
+      email = st.text_input(
+          "Email Address",
+          value=st.session_state["signup_email"],
+          key="input_email",
+      )
+      st.session_state["signup_email"] = email
+
+      password = st.text_input(
+          "Create Password",
+          type="password",
+          value=st.session_state["signup_password"],
+          key="input_password",
+      )
+      st.session_state["signup_password"] = password
+
+      phone_number = st.text_input(
+          "Phone Number",
+          value=st.session_state["signup_phone"],
+          key="input_phone",
+      )
+      st.session_state["signup_phone"] = phone_number
+
       role_selection = st.selectbox("Select Your Role", ["Patient", "Doctor"])
 
       patient_lat = None
       patient_lon = None
+      custom_clinic_address = ""
+      doc_lat = None
+      doc_lon = None
       secret_code = ""
 
       if role_selection == "Patient":
         st.markdown("---")
-        st.write(
-            "📍 **Browser Live Location (Compulsory to fetch via browser popup)**"
-        )
+        st.write("📍 **Browser Live Location (Compulsory)**")
         loc_data = streamlit_geolocation()
 
         if loc_data and loc_data.get("latitude") is not None:
@@ -223,36 +269,31 @@ if not st.session_state.logged_in:
           )
       else:
         st.markdown("---")
-        st.write("🏥 **Doctor Clinic Location Search (Free)**")
-        search_query = st.text_input(
-            "Type your clinic address (e.g., Divinity Homes Kanpur)",
-            value=st.session_state["selected_address"],
-            key="signup_clinic_search",
+        st.write("🏥 **Doctor Clinic Manual Details**")
+
+        custom_clinic_address = st.text_input(
+            "Enter Clinic Name & Address (e.g., City Health Clinic, Main Bazaar)"
         )
 
-        if search_query and search_query != st.session_state["selected_address"]:
-          suggestions = get_free_place_suggestions(search_query)
-          if suggestions:
-            st.markdown("### Select matching address:")
-            for item in suggestions:
-              display_name = item.get("display_name", "")
-              lat = item.get("lat")
-              lon = item.get("lon")
+        st.write("📍 **Clinic GPS Coordinates (Required for distance math):**")
+        st.write(
+            "You can copy these from Google Maps by dropping a pin on your"
+            " clinic."
+        )
 
-              if st.button(display_name, key=f"osm_{item.get('place_id')}"):
-                st.session_state["selected_address"] = display_name
-                st.session_state["clinic_lat"] = float(lat)
-                st.session_state["clinic_lon"] = float(lon)
-                st.rerun()
-
-        if st.session_state["selected_address"]:
-          st.info(
-              f"Selected: {st.session_state['selected_address']} (Lat:"
-              f" {st.session_state['clinic_lat']}, Lon:"
-              f" {st.session_state['clinic_lon']})"
+        col_lat, col_lon = st.columns(2)
+        with col_lat:
+          doc_lat = st.number_input(
+              "Clinic Latitude", format="%.6f", value=26.8467
+          )
+        with col_lon:
+          doc_lon = st.number_input(
+              "Clinic Longitude", format="%.6f", value=80.9462
           )
 
-        secret_code = st.text_input("Set Your Secret Code", type="password")
+        secret_code = st.text_input(
+            "Set Your Secret Code", type="password", key="input_secret_code"
+        )
 
       if st.button("Complete Sign Up"):
         if not full_name or not email or not password or not phone_number:
@@ -269,13 +310,13 @@ if not st.session_state.logged_in:
               " location before signing up."
           )
         elif role_selection == "Doctor" and (
-            not st.session_state["selected_address"]
+            not custom_clinic_address
             or not secret_code
-            or st.session_state["clinic_lat"] is None
+            or doc_lat is None
+            or doc_lon is None
         ):
           st.error(
-              "Please select a valid clinic location from suggestions and set a"
-              " secret code."
+              "Please fill in your clinic address, coordinates, and secret code."
           )
         else:
           if role_selection == "Patient":
@@ -293,9 +334,9 @@ if not st.session_state.logged_in:
                 "password": hash_password(password),
                 "role": "Doctor",
                 "phone": phone_number,
-                "clinic": st.session_state["selected_address"],
-                "lat": float(st.session_state["clinic_lat"]),
-                "lon": float(st.session_state["clinic_lon"]),
+                "clinic": custom_clinic_address,
+                "lat": float(doc_lat),
+                "lon": float(doc_lon),
                 "secret_code": hash_password(secret_code),
             }
           save_json(USERS_FILE, users_db)
@@ -327,11 +368,7 @@ else:
     st.title("Doctor Live Schedule & Queue Management")
     st.write(f"Welcome Dr. **{user_display_name}**!")
     st.write(f"📞 **Phone:** {current_user_info.get('phone', 'N/A')}")
-    st.write(
-        f"🏥 **Clinic:** {current_user_info.get('clinic', 'N/A')} (Lat:"
-        f" {current_user_info.get('lat')}, Lon:"
-        f" {current_user_info.get('lon')})"
-    )
+    st.write(f"🏥 **Clinic:** {current_user_info.get('clinic', 'N/A')}")
 
     st.markdown("---")
     st.subheader("Manage Slots by Date")
@@ -391,8 +428,8 @@ else:
         st.write(f"### Patient {idx + 1}: {booking['name']}")
         st.write(
             f"🕒 **Slot:** {booking['slot']} | 📞 **Phone:**"
-            f" {booking.get('phone', 'N/A')} | 🚗 **Est. Travel Time from Live"
-            f" Location:** {booking.get('travel_time_mins', 'N/A')} mins"
+            f" {booking.get('phone', 'N/A')} | 🚗 **Est. Travel Time:**"
+            f" {booking.get('travel_time_mins', 'N/A')} mins"
         )
         st.write(f"Current Status: **{booking.get('status', 'Waiting')}**")
 
@@ -401,19 +438,16 @@ else:
           if st.button("⏳ Set Waiting", key=f"wait_{date_str}_{idx}"):
             booking["status"] = "Waiting"
             save_json(DATA_FILE, app_data)
-            st.success(f"Updated {booking['name']} to Waiting.")
             st.rerun()
         with col_b2:
           if st.button("🩺 In Consultation", key=f"clinic_{date_str}_{idx}"):
             booking["status"] = "In Consultation"
             save_json(DATA_FILE, app_data)
-            st.success(f"Updated {booking['name']} to In Consultation.")
             st.rerun()
         with col_b3:
           if st.button("✅ Over / Completed", key=f"over_{date_str}_{idx}"):
             booking["status"] = "Completed"
             save_json(DATA_FILE, app_data)
-            st.success(f"Updated {booking['name']} to Completed.")
             st.rerun()
         st.markdown("---")
     else:
@@ -425,11 +459,6 @@ else:
   else:
     st.title("Patient Appointment & Live Status Dashboard")
     st.write(f"Welcome, **{user_display_name}**!")
-    st.write(f"📞 **Your Phone:** {current_user_info.get('phone', 'N/A')}")
-    st.write(
-        f"📍 **Last Recorded Live Position:**"
-        f" {current_user_info.get('lat')}, {current_user_info.get('lon')}"
-    )
 
     st.subheader("🟢 Your Live Booking Status")
     user_bookings = [
@@ -450,12 +479,9 @@ else:
             f"**Patient Name:** {b['name']}\n\n"
             f"* **Date:** {b['date']}\n"
             f"* **Slot:** {b['slot']}\n"
-            f"* **Estimated Travel Time:** {b.get('travel_time_mins')} minutes"
-            " from your current live location to clinic\n"
+            f"* **Estimated Travel Time:** {b.get('travel_time_mins')} minutes\n"
             f"* **Live Status:** {status_color}"
-            f" **{b.get('status', 'Waiting')}**\n"
-            f"* 📱 *SMS notification sent to {b.get('phone')}: 'Estimated travel"
-            f" time to clinic is {b.get('travel_time_mins')} mins.'*"
+            f" **{b.get('status', 'Waiting')}**"
         )
     else:
       st.write("You have no active appointments booked right now.")
@@ -463,76 +489,126 @@ else:
     st.markdown("---")
     st.subheader("Book a New Consultation Slot")
 
-    patient_name = st.text_input("Patient Full Name")
-    patient_phone = st.text_input(
-        "Patient Phone Number", value=current_user_info.get("phone", "")
-    )
-
-    st.write("📍 **Update Live Location for this Trip (Optional):**")
-    trip_loc = streamlit_geolocation()
-
-    use_current_trip_lat = current_user_info.get("lat", 0.0)
-    use_current_trip_lon = current_user_info.get("lon", 0.0)
-
-    if trip_loc and trip_loc.get("latitude") is not None:
-      use_current_trip_lat = trip_loc.get("latitude")
-      use_current_trip_lon = trip_loc.get("longitude")
-      st.success(
-          f"Fetched new live trip location: {use_current_trip_lat},"
-          f" {use_current_trip_lon}"
-      )
-
     pat_selected_date = st.date_input("Select Preferred Appointment Date")
     pat_date_str = str(pat_selected_date)
 
-    doctor_info = next(
-        (u for u in users_db.values() if u["role"] == "Doctor"), None
-    )
-    available_slots_for_date = app_data.get("slots_by_date", {}).get(
-        pat_date_str, []
+    # Check if user already has an appointment booked for this specific date
+    already_booked_for_date = any(
+        b["date"] == pat_date_str and b["booked_by"] == st.session_state.user_email
+        for b in app_data["booked_appointments"]
     )
 
-    if available_slots_for_date:
-      selected_slot = st.selectbox(
-          f"Available Time Slots for {pat_date_str}", available_slots_for_date
+    if already_booked_for_date:
+      st.success(
+          f"✅ You already have an appointment booked for {pat_date_str}. Check"
+          " your status above!"
       )
     else:
-      selected_slot = None
-      st.warning(
-          f"The doctor has not set any available time slots for {pat_date_str}."
+      patient_name = st.text_input("Patient Full Name")
+      patient_phone = st.text_input(
+          "Patient Phone Number", value=current_user_info.get("phone", "")
       )
 
-    if st.button("Confirm Booking"):
-      if not patient_name or not patient_phone:
-        st.error("Please provide both patient name and phone number.")
-      elif not selected_slot:
-        st.error("No slot selected or available to book.")
-      elif not doctor_info:
-        st.error("No doctor clinic location registered in the system yet.")
-      else:
-        d_lat = doctor_info.get("lat", 0.0)
-        d_lon = doctor_info.get("lon", 0.0)
+      st.markdown("---")
+      st.write("📍 **Live Trip Location Check:**")
+      st.info(
+          "Please click below to fetch your current device's live location for"
+          " this trip calculation."
+      )
+      trip_loc = streamlit_geolocation()
 
-        travel_mins = calculate_travel_time(
-            use_current_trip_lat, use_current_trip_lon, d_lat, d_lon
-        )
+      trip_lat = None
+      trip_lon = None
 
-        app_data["slots_by_date"][pat_date_str].remove(selected_slot)
-        if not app_data["slots_by_date"][pat_date_str]:
-          del app_data["slots_by_date"][pat_date_str]
-
-        app_data["booked_appointments"].append({
-            "name": patient_name,
-            "phone": patient_phone,
-            "slot": selected_slot,
-            "date": pat_date_str,
-            "booked_by": st.session_state.user_email,
-            "status": "Waiting",
-            "travel_time_mins": travel_mins,
-        })
-        save_json(DATA_FILE, app_data)
+      if trip_loc and trip_loc.get("latitude") is not None:
+        trip_lat = trip_loc.get("latitude")
+        trip_lon = trip_loc.get("longitude")
         st.success(
-            f"Successfully booked slot! Estimated travel time from your live"
-            f" location: {travel_mins} mins. SMS sent to {patient_phone}."
+            f"Current Device Location Captured! Lat: {trip_lat}, Lon: {trip_lon}"
         )
-        st.rerun()
+      else:
+        st.warning(
+            "Click the geolocation button above to record your current"
+            " position before booking."
+        )
+
+      doctor_info = next(
+          (u for u in users_db.values() if u["role"] == "Doctor"), None
+      )
+      available_slots_for_date = app_data.get("slots_by_date", {}).get(
+          pat_date_str, []
+      )
+
+      if available_slots_for_date:
+        selected_slot = st.selectbox(
+            f"Available Time Slots for {pat_date_str}",
+            available_slots_for_date,
+        )
+      else:
+        selected_slot = None
+        st.warning(
+            f"The doctor has not set any available time slots for {pat_date_str}."
+        )
+
+      if st.button("Confirm Booking"):
+        if not patient_name or not patient_phone:
+          st.error("Please provide both patient name and phone number.")
+        elif trip_lat is None or trip_lon is None:
+          st.error(
+              "Live location is required to calculate travel time! Please fetch"
+              " your location using the button above."
+          )
+        elif not selected_slot:
+          st.error("No slot selected or available to book.")
+        elif not doctor_info:
+          st.error("No doctor clinic location registered in the system yet.")
+        else:
+          d_lat = doctor_info.get("lat", 0.0)
+          d_lon = doctor_info.get("lon", 0.0)
+
+          travel_mins = calculate_travel_time(
+              trip_lat, trip_lon, d_lat, d_lon
+          )
+
+          app_data["slots_by_date"][pat_date_str].remove(selected_slot)
+          if not app_data["slots_by_date"][pat_date_str]:
+            del app_data["slots_by_date"][pat_date_str]
+
+          app_data["booked_appointments"].append({
+              "name": patient_name,
+              "phone": patient_phone,
+              "slot": selected_slot,
+              "date": pat_date_str,
+              "booked_by": st.session_state.user_email,
+              "status": "Waiting",
+              "travel_time_mins": travel_mins,
+          })
+          save_json(DATA_FILE, app_data)
+
+          # 1. SHOW WEBSITE CONFIRMATION FIRST
+          st.success(
+              f"🎉 **Booking Confirmed!** Slot {selected_slot} on"
+              f" {pat_date_str} is successfully reserved. Estimated travel"
+              f" time: {travel_mins} mins."
+          )
+
+          # 2. ATTEMPT EMAIL NOTIFICATION SILENTLY
+          with st.spinner("Processing email notification..."):
+            email_sent = send_email_notification(
+                st.session_state.user_email,
+                patient_name,
+                selected_slot,
+                pat_date_str,
+                travel_mins,
+            )
+
+          if email_sent:
+            st.info("📧 Confirmation email sent to your inbox.")
+          else:
+            st.warning(
+                "📧 Email not sent (Make sure to configure your valid Gmail and"
+                " App Password in the send_email_notification function)."
+            )
+
+          st.balloons()
+          st.rerun()
