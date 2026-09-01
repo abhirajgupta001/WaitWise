@@ -152,8 +152,8 @@ def calculate_travel_time(lat1, lon1, lat2, lon2):
 
 # --- Email Notification Helper ---
 def send_email_notification(to_email, patient_name, slot, date_str, travel_mins):
-  sender_email = "waitwise09@gmail.com"
-  sender_password = "yjzrumhvtteqekiy"
+  sender_email = "your_email@gmail.com"
+  sender_password = "your_email_app_password"
 
   try:
     msg = MIMEMultipart()

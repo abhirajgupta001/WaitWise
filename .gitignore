@@ -1,1 +1,10 @@
-serviceAccountKey.json
+# Ignore local Streamlit secrets
+.streamlit/secrets.toml
+
+# Ignore Firebase service account key files
+*.json
+
+# Ignore Python cache and virtual environments
+__pycache__/
+venv/
+.env
