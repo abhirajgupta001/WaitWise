@@ -1,5 +1,4 @@
 import hashlib
-import json
 import math
 import os
 import re
@@ -10,6 +9,8 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from streamlit_geolocation import streamlit_geolocation
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -47,6 +48,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- Firebase Initialization ---
+if not firebase_admin._apps:
+  try:
+    if "firebase" in st.secrets:
+      cred_dict = dict(st.secrets["firebase"])
+      cred = credentials.Certificate(cred_dict)
+      firebase_admin.initialize_app(cred)
+    else:
+      cred = credentials.Certificate("serviceAccountKey.json")
+      firebase_admin.initialize_app(cred)
+  except Exception as e:
+    st.error(f"Firebase initialization error: {e}")
+
+db = firestore.client() if firebase_admin._apps else None
+
 # --- Session State Tracking ---
 if "logged_in" not in st.session_state:
   st.session_state.logged_in = False
@@ -65,32 +81,44 @@ if "signup_password" not in st.session_state:
 if "signup_phone" not in st.session_state:
   st.session_state["signup_phone"] = ""
 
-# --- Data Storage Setup ---
-DATA_FILE = "appointments.json"
-USERS_FILE = "users.json"
+
+# --- Firebase Data Loaders & Savers ---
+def load_app_data():
+  if not db:
+    return {"slots_by_date": {}, "booked_appointments": []}
+  doc_ref = db.collection("app_data").document("main_config")
+  doc = doc_ref.get()
+  if doc.exists:
+    return doc.to_dict()
+  else:
+    default_data = {"slots_by_date": {}, "booked_appointments": []}
+    doc_ref.set(default_data)
+    return default_data
 
 
-def load_json(filename, default_structure):
-  if not os.path.exists(filename):
-    save_json(filename, default_structure)
-    return default_structure
-  with open(filename, "r") as f:
-    return json.load(f)
+def save_app_data(data):
+  if db:
+    db.collection("app_data").document("main_config").set(data)
 
 
-def save_json(filename, data):
-  with open(filename, "w") as f:
-    json.dump(data, f, indent=4)
+def load_users_db():
+  if not db:
+    return {}
+  users_ref = db.collection("users")
+  docs = users_ref.stream()
+  users = {}
+  for doc in docs:
+    users[doc.id] = doc.to_dict()
+  return users
 
 
-app_data = load_json(
-    DATA_FILE,
-    {
-        "slots_by_date": {},
-        "booked_appointments": [],
-    },
-)
-users_db = load_json(USERS_FILE, {})
+def save_user_to_db(email, user_data):
+  if db:
+    db.collection("users").document(email).set(user_data)
+
+
+app_data = load_app_data()
+users_db = load_users_db()
 
 
 def hash_password(text):
@@ -124,7 +152,7 @@ def calculate_travel_time(lat1, lon1, lat2, lon2):
 
 # --- Email Notification Helper ---
 def send_email_notification(to_email, patient_name, slot, date_str, travel_mins):
-  sender_email = " waitwise09@gmail.com"
+  sender_email = "waitwise09@gmail.com"
   sender_password = "yjzrumhvtteqekiy"
 
   try:
@@ -320,7 +348,7 @@ if not st.session_state.logged_in:
           )
         else:
           if role_selection == "Patient":
-            users_db[email] = {
+            new_user_data = {
                 "full_name": full_name,
                 "password": hash_password(password),
                 "role": "Patient",
@@ -329,7 +357,7 @@ if not st.session_state.logged_in:
                 "lon": patient_lon,
             }
           else:
-            users_db[email] = {
+            new_user_data = {
                 "full_name": full_name,
                 "password": hash_password(password),
                 "role": "Doctor",
@@ -339,7 +367,8 @@ if not st.session_state.logged_in:
                 "lon": float(doc_lon),
                 "secret_code": hash_password(secret_code),
             }
-          save_json(USERS_FILE, users_db)
+
+          save_user_to_db(email, new_user_data)
           st.success(
               f"Account created successfully as a {role_selection}! Please"
               " switch to Log In."
@@ -389,7 +418,7 @@ else:
 
           if new_slot not in app_data["slots_by_date"][date_str]:
             app_data["slots_by_date"][date_str].append(new_slot)
-            save_json(DATA_FILE, app_data)
+            save_app_data(app_data)
             st.success(f"Added slot '{new_slot}' for {date_str} successfully!")
             st.rerun()
           else:
@@ -411,7 +440,7 @@ else:
             app_data["slots_by_date"][date_str].remove(slot)
             if not app_data["slots_by_date"][date_str]:
               del app_data["slots_by_date"][date_str]
-            save_json(DATA_FILE, app_data)
+            save_app_data(app_data)
             st.success(f"Removed slot '{slot}'")
             st.rerun()
     else:
@@ -437,17 +466,17 @@ else:
         with col_b1:
           if st.button("⏳ Set Waiting", key=f"wait_{date_str}_{idx}"):
             booking["status"] = "Waiting"
-            save_json(DATA_FILE, app_data)
+            save_app_data(app_data)
             st.rerun()
         with col_b2:
           if st.button("🩺 In Consultation", key=f"clinic_{date_str}_{idx}"):
             booking["status"] = "In Consultation"
-            save_json(DATA_FILE, app_data)
+            save_app_data(app_data)
             st.rerun()
         with col_b3:
           if st.button("✅ Over / Completed", key=f"over_{date_str}_{idx}"):
             booking["status"] = "Completed"
-            save_json(DATA_FILE, app_data)
+            save_app_data(app_data)
             st.rerun()
         st.markdown("---")
     else:
@@ -492,7 +521,6 @@ else:
     pat_selected_date = st.date_input("Select Preferred Appointment Date")
     pat_date_str = str(pat_selected_date)
 
-    # Check if user already has an appointment booked for this specific date
     already_booked_for_date = any(
         b["date"] == pat_date_str and b["booked_by"] == st.session_state.user_email
         for b in app_data["booked_appointments"]
@@ -583,16 +611,14 @@ else:
               "status": "Waiting",
               "travel_time_mins": travel_mins,
           })
-          save_json(DATA_FILE, app_data)
+          save_app_data(app_data)
 
-          # 1. SHOW WEBSITE CONFIRMATION FIRST
           st.success(
               f"🎉 **Booking Confirmed!** Slot {selected_slot} on"
               f" {pat_date_str} is successfully reserved. Estimated travel"
               f" time: {travel_mins} mins."
           )
 
-          # 2. ATTEMPT EMAIL NOTIFICATION SILENTLY
           with st.spinner("Processing email notification..."):
             email_sent = send_email_notification(
                 st.session_state.user_email,

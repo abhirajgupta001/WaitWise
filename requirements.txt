@@ -2,3 +2,4 @@ streamlit
 streamlit-geolocation
 requests
 streamlit-autorefresh
+firebase-admin
