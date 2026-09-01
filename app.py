@@ -152,7 +152,7 @@ def calculate_travel_time(lat1, lon1, lat2, lon2):
 
 # --- Email Notification Helper ---
 def send_email_notification(to_email, patient_name, slot, date_str, travel_mins):
-  sender_email = "waitwise09@gmail.com"
+  sender_email = "waitwise@gmail.com"
   sender_password = "yjzrumhvtteqekiy"
 
   try:
@@ -504,13 +504,34 @@ else:
         elif b.get("status") == "Completed":
           status_color = "🟢"
 
+        # --- Dynamic Queue Position & Wait Time Calculation ---
+        date_str_b = b["date"]
+        all_date_bookings = [
+            item for item in app_data["booked_appointments"] 
+            if item["date"] == date_str_b
+        ]
+        
+        # Count all active/waiting patients booked before this one who are not completed
+        patients_ahead = 0
+        for patient in all_date_bookings:
+            if patient["booked_by"] == b["booked_by"] and patient["slot"] == b["slot"]:
+                break
+            if patient.get("status") != "Completed":
+                patients_ahead += 1
+
+        # Average consultation time estimate (e.g., 10 mins per patient)
+        avg_consultation_mins = 10
+        estimated_queue_wait = patients_ahead * avg_consultation_mins
+        total_estimated_time = estimated_queue_wait + b.get("travel_time_mins", 0)
+
         st.info(
             f"**Patient Name:** {b['name']}\n\n"
             f"* **Date:** {b['date']}\n"
             f"* **Slot:** {b['slot']}\n"
+            f"* **Queue Position:** #{patients_ahead + 1} in line ({patients_ahead} patients ahead of you)\n"
             f"* **Estimated Travel Time:** {b.get('travel_time_mins')} minutes\n"
-            f"* **Live Status:** {status_color}"
-            f" **{b.get('status', 'Waiting')}**"
+            f"* **Total Estimated Wait:** ~{total_estimated_time} minutes\n"
+            f"* **Live Status:** {status_color} **{b.get('status', 'Waiting')}**"
         )
     else:
       st.write("You have no active appointments booked right now.")
