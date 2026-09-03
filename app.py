@@ -85,13 +85,13 @@ if "signup_phone" not in st.session_state:
 # --- Firebase Data Loaders & Savers ---
 def load_app_data():
   if not db:
-    return {"slots_by_date": {}, "booked_appointments": []}
+    return {"slots_by_date": {}, "booked_appointments": [], "avg_consultation_time": 10}
   doc_ref = db.collection("app_data").document("main_config")
   doc = doc_ref.get()
   if doc.exists:
     return doc.to_dict()
   else:
-    default_data = {"slots_by_date": {}, "booked_appointments": []}
+    default_data = {"slots_by_date": {}, "booked_appointments": [], "avg_consultation_time": 10}
     doc_ref.set(default_data)
     return default_data
 
@@ -152,7 +152,7 @@ def calculate_travel_time(lat1, lon1, lat2, lon2):
 
 # --- Email Notification Helper ---
 def send_email_notification(to_email, patient_name, slot, date_str, travel_mins):
-  sender_email = "waitwise@gmail.com"
+  sender_email = "waitwise09@gmail.com"
   sender_password = "yjzrumhvtteqekiy"
 
   try:
@@ -278,6 +278,9 @@ if not st.session_state.logged_in:
       doc_lat = None
       doc_lon = None
       secret_code = ""
+      specialty = "General Physician"
+      experience_years = 5
+      consultation_fee = 500
 
       if role_selection == "Patient":
         st.markdown("---")
@@ -297,7 +300,11 @@ if not st.session_state.logged_in:
           )
       else:
         st.markdown("---")
-        st.write("🏥 **Doctor Clinic Manual Details**")
+        st.write("🏥 **Doctor Professional & Clinic Details**")
+
+        specialty = st.text_input("Specialty (e.g. Cardiologist, Dentist, General Physician)", value="General Physician")
+        experience_years = st.number_input("Years of Experience", min_value=1, max_value=50, value=5)
+        consultation_fee = st.number_input("Consultation Fee (₹)", min_value=0, max_value=10000, value=500, step=50)
 
         custom_clinic_address = st.text_input(
             "Enter Clinic Name & Address (e.g., City Health Clinic, Main Bazaar)"
@@ -362,6 +369,9 @@ if not st.session_state.logged_in:
                 "password": hash_password(password),
                 "role": "Doctor",
                 "phone": phone_number,
+                "specialty": specialty,
+                "experience": experience_years,
+                "fee": consultation_fee,
                 "clinic": custom_clinic_address,
                 "lat": float(doc_lat),
                 "lon": float(doc_lon),
@@ -396,8 +406,10 @@ else:
   if st.session_state.user_role == "Doctor":
     st.title("Doctor Live Schedule & Queue Management")
     st.write(f"Welcome Dr. **{user_display_name}**!")
+    st.write(f"🩺 **Specialty:** {current_user_info.get('specialty', 'General')} | 💼 **Experience:** {current_user_info.get('experience', 0)} years | 💵 **Fee:** ₹{current_user_info.get('fee', 0)}")
     st.write(f"📞 **Phone:** {current_user_info.get('phone', 'N/A')}")
     st.write(f"🏥 **Clinic:** {current_user_info.get('clinic', 'N/A')}")
+    st.write(f"📊 **Current Rolling Average Consultation Time:** ~{app_data.get('avg_consultation_time', 10)} mins/patient")
 
     st.markdown("---")
     st.subheader("Manage Slots by Date")
@@ -414,10 +426,12 @@ else:
           if "slots_by_date" not in app_data:
             app_data["slots_by_date"] = {}
           if date_str not in app_data["slots_by_date"]:
-            app_data["slots_by_date"][date_str] = []
+            app_data["slots_by_date"][date_str] = {}
+          if st.session_state.user_email not in app_data["slots_by_date"][date_str]:
+            app_data["slots_by_date"][date_str][st.session_state.user_email] = []
 
-          if new_slot not in app_data["slots_by_date"][date_str]:
-            app_data["slots_by_date"][date_str].append(new_slot)
+          if new_slot not in app_data["slots_by_date"][date_str][st.session_state.user_email]:
+            app_data["slots_by_date"][date_str][st.session_state.user_email].append(new_slot)
             save_app_data(app_data)
             st.success(f"Added slot '{new_slot}' for {date_str} successfully!")
             st.rerun()
@@ -428,7 +442,7 @@ else:
 
     st.markdown("---")
     st.subheader(f"Active Slots on {date_str}")
-    current_date_slots = app_data.get("slots_by_date", {}).get(date_str, [])
+    current_date_slots = app_data.get("slots_by_date", {}).get(date_str, {}).get(st.session_state.user_email, [])
 
     if current_date_slots:
       for slot in list(current_date_slots):
@@ -437,9 +451,9 @@ else:
           st.write(f"• {slot}")
         with col_s2:
           if st.button("Delete Slot", key=f"del_{date_str}_{slot}"):
-            app_data["slots_by_date"][date_str].remove(slot)
-            if not app_data["slots_by_date"][date_str]:
-              del app_data["slots_by_date"][date_str]
+            app_data["slots_by_date"][date_str][st.session_state.user_email].remove(slot)
+            if not app_data["slots_by_date"][date_str][st.session_state.user_email]:
+              del app_data["slots_by_date"][date_str][st.session_state.user_email]
             save_app_data(app_data)
             st.success(f"Removed slot '{slot}'")
             st.rerun()
@@ -449,16 +463,18 @@ else:
     st.markdown("---")
     st.subheader("🔴 Live Patient Queue Dashboard")
     date_bookings = [
-        b for b in app_data["booked_appointments"] if b["date"] == date_str
+        b for b in app_data["booked_appointments"] 
+        if b["date"] == date_str and b.get("doctor_email") == st.session_state.user_email
     ]
 
     if date_bookings:
       for idx, booking in enumerate(date_bookings):
         st.write(f"### Patient {idx + 1}: {booking['name']}")
+        duration_info = f" | ⏱️ **Duration:** {booking['duration_mins']} mins" if "duration_mins" in booking else ""
         st.write(
             f"🕒 **Slot:** {booking['slot']} | 📞 **Phone:**"
-            f" {booking.get('phone', 'N/A')} | 🚗 **Est. Travel Time:**"
-            f" {booking.get('travel_time_mins', 'N/A')} mins"
+            f" {booking.get('phone', 'N/A')} | 🚗 **Est. Travel:**"
+            f" {booking.get('travel_time_mins', 'N/A')} mins{duration_info}"
         )
         st.write(f"Current Status: **{booking.get('status', 'Waiting')}**")
 
@@ -476,7 +492,24 @@ else:
         with col_b3:
           if st.button("✅ Over / Completed", key=f"over_{date_str}_{idx}"):
             booking["status"] = "Completed"
+            
+            actual_duration = st.number_input(
+                f"Enter actual minutes taken for {booking['name']}:", 
+                min_value=1, max_value=120, value=10, 
+                key=f"dur_{date_str}_{idx}"
+            )
+            booking["duration_mins"] = actual_duration
+
+            completed_bookings = [
+                item for item in app_data["booked_appointments"] 
+                if item.get("status") == "Completed" and "duration_mins" in item
+            ]
+            if completed_bookings:
+                total_mins = sum(item["duration_mins"] for item in completed_bookings)
+                app_data["avg_consultation_time"] = round(total_mins / len(completed_bookings))
+
             save_app_data(app_data)
+            st.success(f"Marked completed! Recorded duration: {actual_duration} mins.")
             st.rerun()
         st.markdown("---")
     else:
@@ -504,14 +537,13 @@ else:
         elif b.get("status") == "Completed":
           status_color = "🟢"
 
-        # --- Dynamic Queue Position & Wait Time Calculation ---
         date_str_b = b["date"]
+        doc_email_b = b.get("doctor_email")
         all_date_bookings = [
             item for item in app_data["booked_appointments"] 
-            if item["date"] == date_str_b
+            if item["date"] == date_str_b and item.get("doctor_email") == doc_email_b
         ]
         
-        # Count all active/waiting patients booked before this one who are not completed
         patients_ahead = 0
         for patient in all_date_bookings:
             if patient["booked_by"] == b["booked_by"] and patient["slot"] == b["slot"]:
@@ -519,16 +551,17 @@ else:
             if patient.get("status") != "Completed":
                 patients_ahead += 1
 
-        # Average consultation time estimate (e.g., 10 mins per patient)
-        avg_consultation_mins = 10
-        estimated_queue_wait = patients_ahead * avg_consultation_mins
+        dynamic_avg_time = app_data.get("avg_consultation_time", 10)
+        estimated_queue_wait = patients_ahead * dynamic_avg_time
         total_estimated_time = estimated_queue_wait + b.get("travel_time_mins", 0)
 
         st.info(
-            f"**Patient Name:** {b['name']}\n\n"
+            f"**Doctor:** {b.get('doctor_name', 'N/A')} ({b.get('doctor_specialty', 'General')})\n\n"
+            f"* **Patient Name:** {b['name']}\n"
             f"* **Date:** {b['date']}\n"
             f"* **Slot:** {b['slot']}\n"
             f"* **Queue Position:** #{patients_ahead + 1} in line ({patients_ahead} patients ahead of you)\n"
+            f"* **Clinic Rolling Average Speed:** ~{dynamic_avg_time} mins per patient\n"
             f"* **Estimated Travel Time:** {b.get('travel_time_mins')} minutes\n"
             f"* **Total Estimated Wait:** ~{total_estimated_time} minutes\n"
             f"* **Live Status:** {status_color} **{b.get('status', 'Waiting')}**"
@@ -537,125 +570,147 @@ else:
       st.write("You have no active appointments booked right now.")
 
     st.markdown("---")
-    st.subheader("Book a New Consultation Slot")
+    st.subheader("👨‍⚕️ Available Doctors Directory & Booking")
 
-    pat_selected_date = st.date_input("Select Preferred Appointment Date")
-    pat_date_str = str(pat_selected_date)
+    doctors_list = {email: data for email, data in users_db.items() if data.get("role") == "Doctor"}
 
-    already_booked_for_date = any(
-        b["date"] == pat_date_str and b["booked_by"] == st.session_state.user_email
-        for b in app_data["booked_appointments"]
-    )
-
-    if already_booked_for_date:
-      st.success(
-          f"✅ You already have an appointment booked for {pat_date_str}. Check"
-          " your status above!"
-      )
+    if not doctors_list:
+      st.warning("No doctors are currently registered in the system.")
     else:
-      patient_name = st.text_input("Patient Full Name")
-      patient_phone = st.text_input(
-          "Patient Phone Number", value=current_user_info.get("phone", "")
+      st.write("Browse available doctors below, review their expertise, fees, and clinic details, and select one to book:")
+      
+      doc_options = {f"Dr. {data['full_name']} — {data.get('specialty', 'General')} (Fee: ₹{data.get('fee', 0)}, Exp: {data.get('experience', 0)} yrs)": email for email, data in doctors_list.items()}
+      
+      selected_doc_label = st.selectbox("Select a Doctor", list(doc_options.keys()))
+      selected_doc_email = doc_options[selected_doc_label]
+      selected_doc_info = doctors_list[selected_doc_email]
+
+      # Display selected doctor card details
+      st.markdown(
+          f"### Dr. {selected_doc_info['full_name']}\n"
+          f"* **Specialty:** {selected_doc_info.get('specialty', 'General')}\n"
+          f"* **Experience:** {selected_doc_info.get('experience', 0)} years\n"
+          f"* **Consultation Fee:** ₹{selected_doc_info.get('fee', 0)}\n"
+          f"* **Clinic:** {selected_doc_info.get('clinic', 'N/A')}\n"
+          f"* **Phone:** {selected_doc_info.get('phone', 'N/A')}"
       )
 
-      st.markdown("---")
-      st.write("📍 **Live Trip Location Check:**")
-      st.info(
-          "Please click below to fetch your current device's live location for"
-          " this trip calculation."
+      pat_selected_date = st.date_input("Select Preferred Appointment Date")
+      pat_date_str = str(pat_selected_date)
+
+      already_booked_for_date = any(
+          b["date"] == pat_date_str and b["booked_by"] == st.session_state.user_email and b.get("doctor_email") == selected_doc_email
+          for b in app_data["booked_appointments"]
       )
-      trip_loc = streamlit_geolocation()
 
-      trip_lat = None
-      trip_lon = None
-
-      if trip_loc and trip_loc.get("latitude") is not None:
-        trip_lat = trip_loc.get("latitude")
-        trip_lon = trip_loc.get("longitude")
+      if already_booked_for_date:
         st.success(
-            f"Current Device Location Captured! Lat: {trip_lat}, Lon: {trip_lon}"
+            f"✅ You already have an appointment booked with Dr. {selected_doc_info['full_name']} for {pat_date_str}."
         )
       else:
-        st.warning(
-            "Click the geolocation button above to record your current"
-            " position before booking."
+        patient_name = st.text_input("Patient Full Name")
+        patient_phone = st.text_input(
+            "Patient Phone Number", value=current_user_info.get("phone", "")
         )
 
-      doctor_info = next(
-          (u for u in users_db.values() if u["role"] == "Doctor"), None
-      )
-      available_slots_for_date = app_data.get("slots_by_date", {}).get(
-          pat_date_str, []
-      )
-
-      if available_slots_for_date:
-        selected_slot = st.selectbox(
-            f"Available Time Slots for {pat_date_str}",
-            available_slots_for_date,
+        st.markdown("---")
+        st.write("📍 **Live Trip Location Check:**")
+        st.info(
+            "Please click below to fetch your current device's live location for"
+            " this trip calculation."
         )
-      else:
-        selected_slot = None
-        st.warning(
-            f"The doctor has not set any available time slots for {pat_date_str}."
-        )
+        trip_loc = streamlit_geolocation()
 
-      if st.button("Confirm Booking"):
-        if not patient_name or not patient_phone:
-          st.error("Please provide both patient name and phone number.")
-        elif trip_lat is None or trip_lon is None:
-          st.error(
-              "Live location is required to calculate travel time! Please fetch"
-              " your location using the button above."
-          )
-        elif not selected_slot:
-          st.error("No slot selected or available to book.")
-        elif not doctor_info:
-          st.error("No doctor clinic location registered in the system yet.")
-        else:
-          d_lat = doctor_info.get("lat", 0.0)
-          d_lon = doctor_info.get("lon", 0.0)
+        trip_lat = None
+        trip_lon = None
 
-          travel_mins = calculate_travel_time(
-              trip_lat, trip_lon, d_lat, d_lon
-          )
-
-          app_data["slots_by_date"][pat_date_str].remove(selected_slot)
-          if not app_data["slots_by_date"][pat_date_str]:
-            del app_data["slots_by_date"][pat_date_str]
-
-          app_data["booked_appointments"].append({
-              "name": patient_name,
-              "phone": patient_phone,
-              "slot": selected_slot,
-              "date": pat_date_str,
-              "booked_by": st.session_state.user_email,
-              "status": "Waiting",
-              "travel_time_mins": travel_mins,
-          })
-          save_app_data(app_data)
-
+        if trip_loc and trip_loc.get("latitude") is not None:
+          trip_lat = trip_loc.get("latitude")
+          trip_lon = trip_loc.get("longitude")
           st.success(
-              f"🎉 **Booking Confirmed!** Slot {selected_slot} on"
-              f" {pat_date_str} is successfully reserved. Estimated travel"
-              f" time: {travel_mins} mins."
+              f"Current Device Location Captured! Lat: {trip_lat}, Lon: {trip_lon}"
+          )
+        else:
+          st.warning(
+              "Click the geolocation button above to record your current"
+              " position before booking."
           )
 
-          with st.spinner("Processing email notification..."):
-            email_sent = send_email_notification(
-                st.session_state.user_email,
-                patient_name,
-                selected_slot,
-                pat_date_str,
-                travel_mins,
-            )
+        available_slots_for_date = app_data.get("slots_by_date", {}).get(
+            pat_date_str, {}
+        ).get(selected_doc_email, [])
 
-          if email_sent:
-            st.info("📧 Confirmation email sent to your inbox.")
+        if available_slots_for_date:
+          selected_slot = st.selectbox(
+              f"Available Time Slots for Dr. {selected_doc_info['full_name']} on {pat_date_str}",
+              available_slots_for_date,
+          )
+        else:
+          selected_slot = None
+          st.warning(
+              f"Dr. {selected_doc_info['full_name']} has not set any available time slots for {pat_date_str}."
+          )
+
+        if st.button("Confirm Booking"):
+          if not patient_name or not patient_phone:
+            st.error("Please provide both patient name and phone number.")
+          elif trip_lat is None or trip_lon is None:
+            st.error(
+                "Live location is required to calculate travel time! Please fetch"
+                " your location using the button above."
+            )
+          elif not selected_slot:
+            st.error("No slot selected or available to book.")
           else:
-            st.warning(
-                "📧 Email not sent (Make sure to configure your valid Gmail and"
-                " App Password in the send_email_notification function)."
+            d_lat = selected_doc_info.get("lat", 0.0)
+            d_lon = selected_doc_info.get("lon", 0.0)
+
+            travel_mins = calculate_travel_time(
+                trip_lat, trip_lon, d_lat, d_lon
             )
 
-          st.balloons()
-          st.rerun()
+            app_data["slots_by_date"][pat_date_str][selected_doc_email].remove(selected_slot)
+            if not app_data["slots_by_date"][pat_date_str][selected_doc_email]:
+              del app_data["slots_by_date"][pat_date_str][selected_doc_email]
+            if not app_data["slots_by_date"][pat_date_str]:
+              del app_data["slots_by_date"][pat_date_str]
+
+            app_data["booked_appointments"].append({
+                "name": patient_name,
+                "phone": patient_phone,
+                "slot": selected_slot,
+                "date": pat_date_str,
+                "booked_by": st.session_state.user_email,
+                "doctor_email": selected_doc_email,
+                "doctor_name": selected_doc_info["full_name"],
+                "doctor_specialty": selected_doc_info.get("specialty", "General"),
+                "status": "Waiting",
+                "travel_time_mins": travel_mins,
+            })
+            save_app_data(app_data)
+
+            st.success(
+                f"🎉 **Booking Confirmed!** Slot {selected_slot} with"
+                f" Dr. {selected_doc_info['full_name']} on {pat_date_str} is successfully reserved. Estimated travel"
+                f" time: {travel_mins} mins."
+            )
+
+            with st.spinner("Processing email notification..."):
+              email_sent = send_email_notification(
+                  st.session_state.user_email,
+                  patient_name,
+                  selected_slot,
+                  pat_date_str,
+                  travel_mins,
+              )
+
+            if email_sent:
+              st.info("📧 Confirmation email sent to your inbox.")
+            else:
+              st.warning(
+                  "📧 Email not sent (Make sure to configure your valid Gmail and"
+                  " App Password in the send_email_notification function)."
+              )
+
+            st.balloons()
+            st.rerun()
