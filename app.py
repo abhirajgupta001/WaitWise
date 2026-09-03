@@ -594,7 +594,7 @@ else:
 
             completed_bookings = [
                 item for item in app_data["booked_appointments"] 
-                if item.get("status"] == "Completed" and "duration_mins" in item
+                if item.get["status"] == "Completed" and "duration_mins" in item
             ]
             if completed_bookings:
                 total_mins = sum(item["duration_mins"] for item in completed_bookings)
