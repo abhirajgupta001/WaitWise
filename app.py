@@ -16,13 +16,13 @@ from firebase_admin import credentials, firestore
 st.set_page_config(
     page_title="Wait Wise - Live Doctor Queue",
     page_icon="🩺",
-    layout="centered",
+    layout="wide",
 )
 
 # --- Automatic Real-Time Refresh (Every 5 Seconds) ---
 st_autorefresh(interval=5000, limit=None, key="datarefresh")
 
-# --- Warm Light Brown Theme & Custom Styling ---
+# --- Warm Beige Theme & Custom Card Styling ---
 st.markdown(
     """
     <style>
@@ -31,21 +31,36 @@ st.markdown(
         background-color: #F5F2EB;
     }
     h1, h2, h3 {
-        color: #008080 !important;
+        color: #1a3c34 !important;
+        font-family: sans-serif;
     }
+    p, span, label {
+        color: #2f4f4f;
+    }
+    /* Buttons Styling */
     .stButton>button {
-        background-color: #008080 !important;
+        background-color: #1a3c34 !important;
         color: white !important;
-        border-radius: 5px;
+        border-radius: 6px;
         border: none;
-        font-weight: bold;
+        font-weight: 600;
+        padding: 0.5rem 1rem;
     }
     .stButton>button:hover {
-        background-color: #005959 !important;
+        background-color: #2d5a4c !important;
         color: white !important;
     }
     [data-testid="stSidebar"] {
         background-color: #EBE5D8;
+    }
+    /* Custom Card Containers for Landing Page */
+    .landing-card {
+        background-color: #FFFFFF;
+        border: 1px solid #E3DFD5;
+        padding: 30px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);
+        height: 100%;
     }
     </style>
 """,
@@ -74,6 +89,12 @@ if "user_email" not in st.session_state:
   st.session_state.user_email = ""
 if "user_role" not in st.session_state:
   st.session_state.user_role = ""
+
+# Navigation state for landing page buttons ("Login" or "Signup" views)
+if "auth_action" not in st.session_state:
+  st.session_state.auth_action = None
+if "target_role" not in st.session_state:
+  st.session_state.target_role = None
 
 # Persistent sign-up field session states
 if "signup_name" not in st.session_state:
@@ -156,8 +177,8 @@ def calculate_travel_time(lat1, lon1, lat2, lon2):
 
 # --- Email Notification Helper ---
 def send_email_notification(to_email, patient_name, slot, date_str, travel_mins):
-  sender_email = "waitwise09@gmail.com"
-  sender_password = "yjzrumhvtteqekiy"
+  sender_email = "your_email@gmail.com"
+  sender_password = "your_email_app_password"
 
   try:
     msg = MIMEMultipart()
@@ -184,28 +205,96 @@ def send_email_notification(to_email, patient_name, slot, date_str, travel_mins)
 
 
 # ==========================================
-# 1. AUTHENTICATION SCREEN (LOGIN / SIGN UP)
+# 1. AUTHENTICATION & LANDING SCREEN UI
 # ==========================================
 if not st.session_state.logged_in:
-  col1, col2, col3 = st.columns([1, 2, 1])
+  
+  # Optional Header Logo rendering
+  if os.path.exists("logo.png"):
+    st.image("logo.png", width=120)
+  else:
+    st.markdown("### 🟢 QueWise")
 
-  with col2:
-    if os.path.exists("logo.png"):
-      st.image("logo.png", width=200, use_container_width=False)
+  # If user hasn't selected login/signup yet, render the exact card layout from your screenshot
+  if st.session_state.auth_action is None:
+    st.markdown(
+        """
+        <h1 style='font-size: 3.5rem; font-weight: 800; line-height: 1.1; margin-top: 20px;'>
+            Know your turn.<br>Not just your token.
+        </h1>
+        <p style='font-size: 1.2rem; margin-top: 15px; margin-bottom: 40px; color: #4A5568;'>
+            QueWise shows patients live waiting time, and gives doctors a clean queue plus visit reports — so clinics run on time, not on shouting token numbers.
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    st.title("Wait Wise Portal")
+    col_pat, col_doc = st.columns(2, gap="large")
 
-    auth_mode = st.radio("Choose action", ["Log In", "Sign Up"], horizontal=True)
+    with col_pat:
+      st.markdown(
+          """
+          <div class="landing-card">
+              <h3>I'm a patient</h3>
+              <p style="min-height: 60px; margin-top: 10px;">Find clinics, book a slot, get a token, and watch estimated wait update as the doctor finishes each consult.</p>
+          </div>
+          """,
+          unsafe_allow_html=True,
+      )
+      c1, c2 = st.columns(2)
+      with c1:
+        if st.button("Log in", key="pat_login_btn"):
+          st.session_state.auth_action = "Log In"
+          st.session_state.target_role = "Patient"
+          st.rerun()
+      with c2:
+        if st.button("Sign up", key="pat_signup_btn"):
+          st.session_state.auth_action = "Sign Up"
+          st.session_state.target_role = "Patient"
+          st.rerun()
 
-    if auth_mode == "Log In":
-      st.write("Sign in with your email and password.")
+    with col_doc:
+      st.markdown(
+          """
+          <div class="landing-card">
+              <h3>I'm a doctor</h3>
+              <p style="min-height: 60px; margin-top: 10px;">Register your clinic, set consultation hours and fees, start/end visits, and write reports that follow the patient.</p>
+          </div>
+          """,
+          unsafe_allow_html=True,
+      )
+      c3, c4 = st.columns(2)
+      with c3:
+        if st.button("Log in", key="doc_login_btn"):
+          st.session_state.auth_action = "Log In"
+          st.session_state.target_role = "Doctor"
+          st.rerun()
+      with c4:
+        if st.button("Sign up", key="doc_signup_btn"):
+          st.session_state.auth_action = "Sign Up"
+          st.session_state.target_role = "Doctor"
+          st.rerun()
+
+  else:
+    # Render form based on selected role & action context
+    if st.button("← Back to Home"):
+      st.session_state.auth_action = None
+      st.session_state.target_role = None
+      st.rerun()
+
+    role_title = st.session_state.target_role
+    action_title = st.session_state.auth_action
+
+    st.title(f"{role_title} {action_title}")
+
+    if action_title == "Log In":
+      st.write(f"Sign in to your {role_title.lower()} account.")
       with st.form("login_form"):
-        login_role = st.selectbox("I am logging in as:", ["Patient", "Doctor"])
         email = st.text_input("Email Address")
         password = st.text_input("Password", type="password")
 
         doctor_login_code = ""
-        if login_role == "Doctor":
+        if role_title == "Doctor":
           doctor_login_code = st.text_input(
               "Your Doctor Secret Code", type="password"
           )
@@ -215,12 +304,12 @@ if not st.session_state.logged_in:
         if login_submit:
           hashed_pw = hash_password(password)
           if email in users_db and users_db[email]["password"] == hashed_pw:
-            if users_db[email]["role"] != login_role:
+            if users_db[email]["role"] != role_title:
               st.error(
                   f"This account is registered as a"
-                  f" {users_db[email]['role']}, not a {login_role}."
+                  f" {users_db[email]['role']}, not a {role_title}."
               )
-            elif login_role == "Doctor":
+            elif role_title == "Doctor":
               hashed_input_code = hash_password(doctor_login_code)
               if (
                   users_db[email].get("secret_code")
@@ -243,7 +332,7 @@ if not st.session_state.logged_in:
             st.error("Invalid email or password. Please try again.")
 
     else:
-      st.write("Create a new account.")
+      st.write(f"Create a new {role_title.lower()} account.")
 
       full_name = st.text_input(
           "Full Name",
@@ -274,8 +363,6 @@ if not st.session_state.logged_in:
       )
       st.session_state["signup_phone"] = phone_number
 
-      role_selection = st.selectbox("Select Your Role", ["Patient", "Doctor"])
-
       patient_lat = None
       patient_lon = None
       custom_clinic_address = ""
@@ -286,7 +373,7 @@ if not st.session_state.logged_in:
       experience_years = 5
       consultation_fee = 500
 
-      if role_selection == "Patient":
+      if role_title == "Patient":
         st.markdown("---")
         st.write("📍 **Browser Live Location (Compulsory)**")
         loc_data = streamlit_geolocation()
@@ -341,14 +428,14 @@ if not st.session_state.logged_in:
           st.error("Please enter a valid email address.")
         elif email in users_db:
           st.error("An account with this email already exists.")
-        elif role_selection == "Patient" and (
+        elif role_title == "Patient" and (
             patient_lat is None or patient_lon is None
         ):
           st.error(
               "Live location permission is compulsory! Please fetch your live"
               " location before signing up."
           )
-        elif role_selection == "Doctor" and (
+        elif role_title == "Doctor" and (
             not custom_clinic_address
             or not secret_code
             or doc_lat is None
@@ -358,7 +445,7 @@ if not st.session_state.logged_in:
               "Please fill in your clinic address, coordinates, and secret code."
           )
         else:
-          if role_selection == "Patient":
+          if role_title == "Patient":
             new_user_data = {
                 "full_name": full_name,
                 "password": hash_password(password),
@@ -384,8 +471,7 @@ if not st.session_state.logged_in:
 
           save_user_to_db(email, new_user_data)
           st.success(
-              f"Account created successfully as a {role_selection}! Please"
-              " switch to Log In."
+              f"Account created successfully as a {role_title}! Please go back and Log In."
           )
 
 # ==========================================
@@ -393,12 +479,14 @@ if not st.session_state.logged_in:
 # ==========================================
 else:
   if os.path.exists("logo.png"):
-    st.image("logo.png", width=200)
+    st.image("logo.png", width=120)
 
   if st.sidebar.button("Log Out"):
     st.session_state.logged_in = False
     st.session_state.user_email = ""
     st.session_state.user_role = ""
+    st.session_state.auth_action = None
+    st.session_state.target_role = None
     st.rerun()
 
   current_user_info = users_db.get(st.session_state.user_email, {})
@@ -506,7 +594,7 @@ else:
 
             completed_bookings = [
                 item for item in app_data["booked_appointments"] 
-                if item.get("status") == "Completed" and "duration_mins" in item
+                if item.get("status"] == "Completed" and "duration_mins" in item
             ]
             if completed_bookings:
                 total_mins = sum(item["duration_mins"] for item in completed_bookings)
@@ -589,7 +677,6 @@ else:
       selected_doc_email = doc_options[selected_doc_label]
       selected_doc_info = doctors_list[selected_doc_email]
 
-      # Display selected doctor card details
       st.markdown(
           f"### Dr. {selected_doc_info['full_name']}\n"
           f"* **Specialty:** {selected_doc_info.get('specialty', 'General')}\n"
