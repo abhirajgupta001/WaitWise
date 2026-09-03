@@ -22,10 +22,14 @@ st.set_page_config(
 # --- Automatic Real-Time Refresh (Every 5 Seconds) ---
 st_autorefresh(interval=5000, limit=None, key="datarefresh")
 
-# --- Teal Theme & Custom Styling ---
+# --- Warm Light Brown Theme & Custom Styling ---
 st.markdown(
     """
     <style>
+    /* Main App Background */
+    .stApp {
+        background-color: #F5F2EB;
+    }
     h1, h2, h3 {
         color: #008080 !important;
     }
@@ -41,7 +45,7 @@ st.markdown(
         color: white !important;
     }
     [data-testid="stSidebar"] {
-        background-color: #f0f7f7;
+        background-color: #EBE5D8;
     }
     </style>
 """,
